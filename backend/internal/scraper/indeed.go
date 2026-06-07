@@ -77,7 +77,7 @@ func (s *IndeedScraper) Search(ctx context.Context, query string, location strin
 						});
 					}
 				});
-				return JSON.stringify(results);
+				return results;
 			})()
 		`, &jobCards),
 	)

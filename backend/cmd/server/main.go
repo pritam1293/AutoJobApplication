@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
@@ -20,6 +22,7 @@ func main() {
 	linkedInEmail := getEnv("LINKEDIN_EMAIL", "")
 	linkedInPass := getEnv("LINKEDIN_PASSWORD", "")
 	resumeDir := getEnv("RESUME_DIR", "./uploads")
+	scheduleInterval := getEnv("SCHEDULE_INTERVAL", "30m")
 	mode := getEnv("GIN_MODE", "release")
 
 	gin.SetMode(mode)
@@ -27,6 +30,13 @@ func main() {
 	db.Init(dbPath)
 
 	handler := api.NewHandler(googleAIKey, linkedInEmail, linkedInPass, resumeDir)
+
+	interval, err := time.ParseDuration(scheduleInterval)
+	if err != nil {
+		interval = 30 * time.Minute
+	}
+
+	handler.StartScheduler(context.Background(), interval)
 
 	router := gin.Default()
 

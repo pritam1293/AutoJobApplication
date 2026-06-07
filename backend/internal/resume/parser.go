@@ -5,16 +5,18 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/jung-kurt/gofpdf/v2"
 	"github.com/ledongthuc/pdf"
 )
 
 type ResumeData struct {
-	RawText   string            `json:"raw_text"`
-	FileName  string            `json:"file_name"`
-	FileSize  int64             `json:"file_size"`
-	PageCount int               `json:"page_count"`
-	Structured  *StructuredResume `json:"structured,omitempty"`
+	RawText    string            `json:"raw_text"`
+	FileName   string            `json:"file_name"`
+	FileSize   int64             `json:"file_size"`
+	PageCount  int               `json:"page_count"`
+	Structured *StructuredResume `json:"structured,omitempty"`
 }
 
 type StructuredResume struct {
@@ -102,7 +104,84 @@ func ParsePDFFromReader(r io.Reader, filename string) (*ResumeData, error) {
 }
 
 func GeneratePDF(resumeContent string, outputPath string) error {
-	return nil
+	pdf := gofpdf.New("P", "mm", "A4", "")
+	pdf.SetMargins(20, 20, 20)
+	pdf.AddPage()
+
+	tr := pdf.UnicodeTranslatorFromDescriptor("")
+
+	lines := strings.Split(resumeContent, "\n")
+	inBullet := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		if trimmed == "" {
+			inBullet = false
+			continue
+		}
+
+		isBullet := strings.HasPrefix(trimmed, "-") || strings.HasPrefix(trimmed, "*") || strings.HasPrefix(trimmed, "•")
+		isHeader := false
+
+		uppercase := strings.ToUpper(trimmed)
+		clean := strings.TrimLeft(trimmed, "-*•# ")
+		cleanTrimmed := strings.TrimSpace(clean)
+
+		if strings.Count(trimmed, "#") > 0 || trimmed == strings.ToUpper(trimmed) && len(trimmed) > 3 && len(trimmed) < 60 {
+			upperRatio := 0.0
+			if len(trimmed) > 0 {
+				upperCount := 0
+				for _, ch := range trimmed {
+					if ch >= 'A' && ch <= 'Z' {
+						upperCount++
+					}
+				}
+				upperRatio = float64(upperCount) / float64(len(trimmed))
+			}
+
+			if strings.HasPrefix(trimmed, "#") || (upperRatio > 0.7 && len(trimmed) > 5) {
+				isHeader = true
+			}
+		}
+
+		if strings.HasPrefix(uppercase, "SKILLS") || strings.HasPrefix(uppercase, "EXPERIENCE") ||
+			strings.HasPrefix(uppercase, "EDUCATION") || strings.HasPrefix(uppercase, "SUMMARY") ||
+			strings.HasPrefix(uppercase, "PROJECT") || strings.HasPrefix(uppercase, "CERTIFICATION") ||
+			strings.HasPrefix(uppercase, "WORK") || strings.HasPrefix(uppercase, "PROFILE") {
+			isHeader = true
+		}
+
+		if isHeader {
+			pdf.SetFont("Helvetica", "B", 13)
+			pdf.SetTextColor(30, 60, 180)
+			pdf.CellFormat(0, 8, tr(cleanTrimmed), "", 1, "L", false, 0, "")
+			pdf.SetDrawColor(30, 60, 180)
+			pdf.Line(20, pdf.GetY(), 190, pdf.GetY())
+			pdf.Ln(3)
+			inBullet = false
+		} else if isBullet || inBullet {
+			pdf.SetFont("Helvetica", "", 10)
+			pdf.SetTextColor(40, 40, 40)
+			text := cleanTrimmed
+			if pdf.GetStringWidth(tr(text)) > 160 {
+				pdf.MultiCell(170, 5, tr("• "+text), "", "L", false)
+			} else {
+				pdf.CellFormat(0, 6, tr("• "+text), "", 1, "L", false, 0, "")
+			}
+			inBullet = true
+		} else {
+			pdf.SetFont("Helvetica", "", 11)
+			pdf.SetTextColor(50, 50, 50)
+			if pdf.GetStringWidth(tr(trimmed)) > 160 {
+				pdf.MultiCell(170, 5.5, tr(trimmed), "", "L", false)
+			} else {
+				pdf.CellFormat(0, 6, tr(trimmed), "", 1, "L", false, 0, "")
+			}
+		}
+	}
+
+	return pdf.OutputFileAndClose(outputPath)
 }
 
 type Manager struct {

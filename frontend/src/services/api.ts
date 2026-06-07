@@ -137,6 +137,11 @@ export const updateSettings = async (settings: Record<string, string>) => {
   return data;
 };
 
+export const toggleAutoApply = async (enabled: boolean) => {
+  const { data } = await api.post('/settings/auto-apply', { enabled });
+  return data;
+};
+
 export const getAnalytics = async () => {
   const { data } = await api.get<Analytics>('/analytics');
   return data;

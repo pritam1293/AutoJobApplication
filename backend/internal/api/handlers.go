@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -36,6 +37,7 @@ func NewHandler(googleAIKey, linkedInEmail, linkedInPass, resumeDir string) *Han
 		tailorEngine:  tailorEngine,
 		applicator:    app,
 		linkedinScr:   scraper.NewLinkedInScraper(linkedInEmail, linkedInPass),
+		indeedScr:     scraper.NewIndeedScraper("", ""),
 		resumeManager: resume.NewManager(resumeDir),
 	}
 }
@@ -66,6 +68,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Settings
 		api.GET("/settings", h.getSettings)
 		api.PUT("/settings", h.updateSettings)
+		api.POST("/settings/auto-apply", h.toggleAutoApply)
 
 		// Analytics
 		api.GET("/analytics", h.getAnalytics)
@@ -79,7 +82,7 @@ func (h *Handler) healthCheck(c *gin.Context) {
 func (h *Handler) searchJobs(c *gin.Context) {
 	var req struct {
 		Query    string `json:"query" binding:"required"`
-		Location string `json:"location" binding:"required"`
+		Location string `json:"location"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -89,13 +92,23 @@ func (h *Handler) searchJobs(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 90*time.Second)
 	defer cancel()
 
-	jobs, err := h.linkedinScr.Search(ctx, req.Query, req.Location)
+	var allJobs []scraper.JobResult
+
+	linkedinJobs, err := h.linkedinScr.Search(ctx, req.Query, req.Location)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("linkedin search failed: %v", err)})
-		return
+		log.Printf("linkedin search failed (non-fatal): %v", err)
+	} else {
+		allJobs = append(allJobs, linkedinJobs...)
 	}
 
-	for _, j := range jobs {
+	indeedJobs, err := h.indeedScr.Search(ctx, req.Query, req.Location)
+	if err != nil {
+		log.Printf("indeed search failed (non-fatal): %v", err)
+	} else {
+		allJobs = append(allJobs, indeedJobs...)
+	}
+
+	for _, j := range allJobs {
 		job := models.Job{
 			Platform:    j.Platform,
 			JobID:       j.JobID,
@@ -112,8 +125,8 @@ func (h *Handler) searchJobs(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"total": len(jobs),
-		"jobs":  jobs,
+		"total": len(allJobs),
+		"jobs":  allJobs,
 	})
 }
 
@@ -168,8 +181,7 @@ func (h *Handler) applyToJob(c *gin.Context) {
 	}
 
 	// Get user's resume
-	var user models.User
-	db.DB.First(&user)
+	user := h.getOrCreateUser()
 
 	result, err := h.applicator.Apply(c.Request.Context(), &job, user.ResumePath)
 	if err != nil {
@@ -208,10 +220,6 @@ func (h *Handler) uploadResume(c *gin.Context) {
 		return
 	}
 
-	resumeData, err := resume.ParsePDFFromReader(nil, "") // read from context
-	_ = resumeData
-
-	// Save file
 	savePath := filepath.Join("uploads", file.Filename)
 	if err := c.SaveUploadedFile(file, savePath); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save file"})
@@ -302,33 +310,41 @@ func (h *Handler) listSearchQueries(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"total": len(queries), "queries": queries})
 }
 
-func (h *Handler) getSettings(c *gin.Context) {
+func (h *Handler) getOrCreateUser() models.User {
 	var user models.User
-	db.DB.First(&user)
+	result := db.DB.First(&user)
+	if result.Error != nil {
+		user = models.User{Name: "Default User"}
+		db.DB.Create(&user)
+	}
+	return user
+}
+
+func (h *Handler) getSettings(c *gin.Context) {
+	user := h.getOrCreateUser()
 	c.JSON(http.StatusOK, gin.H{
-		"name":            user.Name,
-		"email":           user.Email,
-		"linkedin_email":  user.LinkedInEmail,
-		"resume_path":     user.ResumePath,
+		"name":              user.Name,
+		"email":             user.Email,
+		"linkedin_email":    user.LinkedInEmail,
+		"resume_path":       user.ResumePath,
 		"has_google_ai_key": user.OpenAIKey != "",
 	})
 }
 
 func (h *Handler) updateSettings(c *gin.Context) {
 	var req struct {
-		Name           string `json:"name"`
-		Email          string `json:"email"`
-		LinkedInEmail  string `json:"linkedin_email"`
-		LinkedInPass   string `json:"linkedin_password"`
-		GoogleAIKey    string `json:"google_ai_key"`
+		Name          string `json:"name"`
+		Email         string `json:"email"`
+		LinkedInEmail string `json:"linkedin_email"`
+		LinkedInPass  string `json:"linkedin_password"`
+		GoogleAIKey   string `json:"google_ai_key"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	var user models.User
-	db.DB.First(&user)
+	user := h.getOrCreateUser()
 
 	updates := map[string]interface{}{}
 	if req.Name != "" {
@@ -351,15 +367,123 @@ func (h *Handler) updateSettings(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "settings updated"})
 }
 
+func (h *Handler) StartScheduler(ctx context.Context, interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		h.runScheduledSearches(ctx)
+
+		for {
+			select {
+			case <-ticker.C:
+				h.runScheduledSearches(ctx)
+			case <-ctx.Done():
+				log.Println("scheduler stopped")
+				return
+			}
+		}
+	}()
+	log.Printf("scheduler started with interval %s", interval)
+}
+
+func (h *Handler) runScheduledSearches(ctx context.Context) {
+	var queries []models.SearchQuery
+	db.DB.Where("active = ?", true).Find(&queries)
+
+	for _, q := range queries {
+		log.Printf("running scheduled search: %s in %s", q.Query, q.Location)
+
+		searchCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		jobs, err := h.linkedinScr.Search(searchCtx, q.Query, q.Location)
+		cancel()
+
+		if err != nil {
+			log.Printf("scheduled search failed for query '%s': %v", q.Query, err)
+			continue
+		}
+
+		for _, j := range jobs {
+			job := models.Job{
+				Platform:    j.Platform,
+				JobID:       j.JobID,
+				Title:       j.Title,
+				Company:     j.Company,
+				Location:    j.Location,
+				URL:         j.URL,
+				Description: j.Description,
+				Salary:      j.Salary,
+				PostedAt:    j.PostedAt,
+				Status:      "new",
+			}
+			db.DB.Where("job_id = ?", j.JobID).Attrs(job).FirstOrCreate(&job)
+		}
+
+		if q.AutoApply && len(jobs) > 0 {
+			count := 0
+			for _, j := range jobs {
+				if count >= q.MaxApplied {
+					break
+				}
+
+				var job models.Job
+				db.DB.Where("job_id = ? AND status = ?", j.JobID, "new").First(&job)
+				if job.ID == 0 {
+					continue
+				}
+
+				user := h.getOrCreateUser()
+
+				result, err := h.applicator.Apply(ctx, &job, user.ResumePath)
+				if err != nil {
+					log.Printf("auto-apply failed for job %s: %v", j.Title, err)
+					continue
+				}
+
+				app := models.Application{
+					JobID:    job.ID,
+					UserID:   user.ID,
+					Status:   result.Status,
+					AppliedAt: time.Now(),
+					Notes:    result.Message,
+				}
+				db.DB.Create(&app)
+
+				if result.Status == "success" {
+					db.DB.Model(&job).Update("status", "applied")
+					count++
+				}
+			}
+			log.Printf("auto-applied to %d/%d jobs for query '%s'", count, len(jobs), q.Query)
+		}
+	}
+}
+
+func (h *Handler) toggleAutoApply(c *gin.Context) {
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	h.applicator.SetAutoConfirm(req.Enabled)
+	status := "disabled"
+	if req.Enabled {
+		status = "enabled"
+	}
+	log.Printf("auto-apply %s", status)
+	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("auto-apply %s", status), "enabled": req.Enabled})
+}
+
 func (h *Handler) getAnalytics(c *gin.Context) {
 	type CountResult struct {
-		TotalJobs       int64
-		NewJobs         int64
-		AppliedJobs     int64
-		FailedApps      int64
-		SuccessApps     int64
-		PlatformStats   []map[string]interface{}
-		TopCompanies    []map[string]interface{}
+		TotalJobs   int64
+		NewJobs     int64
+		AppliedJobs int64
+		FailedApps  int64
+		SuccessApps int64
 	}
 
 	var result CountResult

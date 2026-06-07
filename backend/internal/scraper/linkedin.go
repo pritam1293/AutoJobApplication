@@ -6,15 +6,21 @@ import (
 	"log"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chromedp/chromedp"
+	"github.com/chromedp/chromedp/device"
 	"github.com/jobhaunt/backend/internal/models"
 )
 
 type LinkedInScraper struct {
-	email    string
-	password string
+	email       string
+	password    string
+	mu          sync.Mutex
+	allocCtx    context.Context
+	allocCancel context.CancelFunc
+	loggedIn    bool
 }
 
 func NewLinkedInScraper(email, password string) *LinkedInScraper {
@@ -28,50 +34,143 @@ func (s *LinkedInScraper) Name() string {
 	return "linkedin"
 }
 
-func (s *LinkedInScraper) Search(ctx context.Context, query string, location string) ([]JobResult, error) {
-	allocCtx, allocCancel := chromedp.NewExecAllocator(ctx,
+func (s *LinkedInScraper) allocOpts() []chromedp.ExecAllocatorOption {
+	opts := chromedp.DefaultExecAllocatorOptions[:]
+	opts = append(opts,
 		chromedp.Flag("headless", true),
 		chromedp.Flag("disable-gpu", true),
 		chromedp.Flag("no-sandbox", true),
-		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+		chromedp.Flag("disable-web-security", true),
+		chromedp.Flag("allow-running-insecure-content", true),
+		chromedp.Flag("disable-notifications", true),
+		chromedp.Flag("disable-popup-blocking", true),
+		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
 	)
-	defer allocCancel()
+	return opts
+}
 
-	ctx, cancel := chromedp.NewContext(allocCtx)
-	defer cancel()
+func (s *LinkedInScraper) ensureAllocator(ctx context.Context) (context.Context, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	ctx, cancel = context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
+	if s.allocCtx == nil {
+		allocCtx, allocCancel := chromedp.NewExecAllocator(ctx, s.allocOpts()...)
+		s.allocCtx = allocCtx
+		s.allocCancel = allocCancel
 
-	if err := s.login(ctx); err != nil {
-		return nil, fmt.Errorf("linkedin login failed: %w", err)
+		if s.email != "" && s.password != "" {
+			browserCtx, browserCancel := chromedp.NewContext(allocCtx)
+			defer browserCancel()
+
+			loginCtx, loginCancel := context.WithTimeout(browserCtx, 45*time.Second)
+			defer loginCancel()
+
+			if err := s.login(loginCtx); err != nil {
+				log.Printf("linkedin login failed (continuing without auth): %v", err)
+			} else {
+				s.loggedIn = true
+				log.Println("linkedin login successful")
+			}
+		} else {
+			log.Println("linkedin: no credentials provided, running without login")
+		}
 	}
+
+	return s.allocCtx, nil
+}
+
+func (s *LinkedInScraper) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.allocCancel != nil {
+		s.allocCancel()
+		s.allocCtx = nil
+		s.allocCancel = nil
+		s.loggedIn = false
+	}
+}
+
+func (s *LinkedInScraper) Search(ctx context.Context, query string, location string) ([]JobResult, error) {
+	allocCtx, err := s.ensureAllocator(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
+	defer browserCancel()
+
+	searchCtx, searchCancel := context.WithTimeout(browserCtx, 90*time.Second)
+	defer searchCancel()
 
 	encodedQuery := url.QueryEscape(query)
 	encodedLocation := url.QueryEscape(location)
 	searchURL := fmt.Sprintf("https://www.linkedin.com/jobs/search/?keywords=%s&location=%s", encodedQuery, encodedLocation)
 
-	var jobsHTML string
-	err := chromedp.Run(ctx,
+	var jobs []JobResult
+	err = chromedp.Run(searchCtx,
+		chromedp.Emulate(device.IPhoneXR),
 		chromedp.Navigate(searchURL),
 		chromedp.Sleep(3*time.Second),
-		chromedp.WaitVisible("div.jobs-search-results-list", chromedp.ByQuery),
-		chromedp.Sleep(2*time.Second),
 		chromedp.ActionFunc(func(ctx context.Context) error {
-			// Scroll down to load more jobs
 			for i := 0; i < 5; i++ {
 				chromedp.Evaluate(`window.scrollBy(0, 800)`, nil).Do(ctx)
 				time.Sleep(1 * time.Second)
 			}
 			return nil
 		}),
-		chromedp.OuterHTML("div.jobs-search-results-list", &jobsHTML, chromedp.ByQuery),
+		chromedp.Evaluate(`
+			(() => {
+				const cards = document.querySelectorAll('li[data-occludable-job-id]');
+				const results = [];
+				cards.forEach(card => {
+					const titleEl = card.querySelector('a.job-card-list__title, strong');
+					const companyEl = card.querySelector('.job-card-container__company-name, a.job-card-container__company-name');
+					const locationEl = card.querySelector('.job-card-container__metadata-item');
+					const linkEl = card.querySelector('a.job-card-list__title');
+					const jobId = card.getAttribute('data-occludable-job-id') || '';
+					if (titleEl && companyEl) {
+						const href = linkEl ? linkEl.getAttribute('href') || '' : '';
+						const fullUrl = href.startsWith('http') ? href : 'https://www.linkedin.com' + href;
+						results.push({
+							job_id: jobId,
+							title: (titleEl.innerText || titleEl.textContent || '').trim(),
+							company: (companyEl.innerText || companyEl.textContent || '').trim(),
+							location: locationEl ? (locationEl.innerText || locationEl.textContent || '').trim() : '',
+							url: fullUrl
+						});
+					}
+				});
+
+				if (results.length === 0) {
+					const fallbackCards = document.querySelectorAll('.job-card-container, .job-search-card, article');
+					fallbackCards.forEach(card => {
+						const titleEl = card.querySelector('a, h3, strong');
+						const companyEl = card.querySelector('.company-name, .job-card-container__company-name, span');
+						if (titleEl) {
+							results.push({
+								job_id: card.getAttribute('data-job-id') || String(Math.random()),
+								title: (titleEl.innerText || titleEl.textContent || '').trim(),
+								company: companyEl ? (companyEl.innerText || companyEl.textContent || '').trim() : '',
+								location: '',
+								url: titleEl.getAttribute('href') ? (titleEl.getAttribute('href').startsWith('http') ? titleEl.getAttribute('href') : 'https://www.linkedin.com' + titleEl.getAttribute('href')) : ''
+							});
+						}
+					});
+				}
+
+				return results;
+			})()
+		`, &jobs),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("linkedin search navigation failed: %w", err)
+		return nil, fmt.Errorf("linkedin search failed: %w", err)
 	}
 
-	jobs := s.parseJobListings(jobsHTML, searchURL)
+	for i := range jobs {
+		jobs[i].Platform = "linkedin"
+	}
 
 	log.Printf("linkedin: found %d jobs for query '%s' in '%s'", len(jobs), query, location)
 	return jobs, nil
@@ -82,7 +181,16 @@ func (s *LinkedInScraper) login(ctx context.Context) error {
 	err := chromedp.Run(ctx,
 		chromedp.Navigate("https://www.linkedin.com/login"),
 		chromedp.WaitVisible("#username", chromedp.ByQuery),
+		chromedp.Sleep(1*time.Second),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			chromedp.Evaluate(`document.querySelector("#username").value = ""`, nil).Do(ctx)
+			return nil
+		}),
 		chromedp.SendKeys("#username", s.email, chromedp.ByQuery),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			chromedp.Evaluate(`document.querySelector("#password").value = ""`, nil).Do(ctx)
+			return nil
+		}),
 		chromedp.SendKeys("#password", s.password, chromedp.ByQuery),
 		chromedp.Click("button[type=submit]", chromedp.ByQuery),
 		chromedp.Sleep(3*time.Second),
@@ -96,79 +204,44 @@ func (s *LinkedInScraper) login(ctx context.Context) error {
 		return fmt.Errorf("linkedin login challenged - manual verification required")
 	}
 
+	if strings.Contains(currentURL, "login") {
+		return fmt.Errorf("linkedin login failed - still on login page")
+	}
+
 	return nil
-}
-
-func (s *LinkedInScraper) parseJobListings(html string, baseURL string) []JobResult {
-	var jobs []JobResult
-
-	// Parse job cards from the HTML
-	// We extract job IDs, titles, companies, and locations via chromedp evaluation
-	// This is a simplified extraction; in production use a more robust DOM parsing
-
-	// For now, we return an empty result and rely on GetJobDetails for individual job data
-	return jobs
 }
 
 func (s *LinkedInScraper) GetJobDetails(ctx context.Context, job *models.Job) error {
-	// Navigate to a specific job posting and extract full details
-	return nil
-}
-
-// GetJobsViaAPI is a helper that extracts job listings by evaluating JavaScript
-func (s *LinkedInScraper) GetJobsViaAPI(ctx context.Context, query, location string) ([]JobResult, error) {
-	allocCtx, allocCancel := chromedp.NewExecAllocator(ctx,
-		chromedp.Flag("headless", true),
-		chromedp.Flag("disable-gpu", true),
-		chromedp.Flag("no-sandbox", true),
-	)
-	defer allocCancel()
-
-	ctx, cancel := chromedp.NewContext(allocCtx)
-	defer cancel()
-
-	ctx, cancel = context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-
-	if err := s.login(ctx); err != nil {
-		return nil, fmt.Errorf("linkedin login failed: %w", err)
+	allocCtx, err := s.ensureAllocator(ctx)
+	if err != nil {
+		return err
 	}
 
-	searchURL := fmt.Sprintf("https://www.linkedin.com/jobs/search/?keywords=%s&location=%s",
-		url.QueryEscape(query), url.QueryEscape(location))
+	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
+	defer browserCancel()
 
-	var jobs []JobResult
-	err := chromedp.Run(ctx,
-		chromedp.Navigate(searchURL),
+	detailCtx, detailCancel := context.WithTimeout(browserCtx, 30*time.Second)
+	defer detailCancel()
+
+	var detail struct {
+		Description string `json:"description"`
+	}
+	err = chromedp.Run(detailCtx,
+		chromedp.Navigate(job.URL),
 		chromedp.Sleep(3*time.Second),
-		chromedp.WaitVisible("div.jobs-search-results-list", chromedp.ByQuery),
-		chromedp.Sleep(2*time.Second),
 		chromedp.Evaluate(`
 			(() => {
-				const cards = document.querySelectorAll('.job-search-card');
-				const results = [];
-				cards.forEach(card => {
-					const titleEl = card.querySelector('.job-search-card__title');
-					const companyEl = card.querySelector('.job-search-card__subtitle');
-					const locationEl = card.querySelector('.job-search-card__location');
-					const linkEl = card.querySelector('a');
-					if (titleEl && companyEl) {
-						results.push({
-							title: titleEl.innerText.trim(),
-							company: companyEl.innerText.trim(),
-							location: locationEl ? locationEl.innerText.trim() : '',
-							url: linkEl ? linkEl.href : '',
-							jobId: card.getAttribute('data-job-id') || ''
-						});
-					}
-				});
-				return JSON.stringify(results);
+				const descEl = document.querySelector('.jobs-description-content__text, .jobs-box__html-content, .description, .show-more-less-html, article');
+				return {
+					description: descEl ? (descEl.innerText || descEl.textContent || '').trim() : ''
+				};
 			})()
-		`, &jobs),
+		`, &detail),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("linkedin DOM extraction failed: %w", err)
+		return fmt.Errorf("linkedin get details failed: %w", err)
 	}
 
-	return jobs, nil
+	job.Description = detail.Description
+	return nil
 }
