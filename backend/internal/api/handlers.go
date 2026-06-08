@@ -92,7 +92,7 @@ func (h *Handler) searchJobs(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 90*time.Second)
 	defer cancel()
 
-	var allJobs []scraper.JobResult
+	allJobs := make([]scraper.JobResult, 0)
 
 	linkedinJobs, err := h.linkedinScr.Search(ctx, req.Query, req.Location)
 	if err != nil {

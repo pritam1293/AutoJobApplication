@@ -24,10 +24,12 @@ export default function Search() {
     setError('');
     try {
       const data = await searchJobs(query, location);
-      setJobs(data.jobs);
-      setTotal(data.total);
-    } catch {
-      setError('Search failed. Check your credentials in Settings.');
+      setJobs(data.jobs || []);
+      setTotal(data.total || 0);
+    } catch (e) {
+      setError((e as Error)?.message || 'Search failed. Check your credentials.');
+      setJobs([]);
+      setTotal(0);
     }
     setLoading(false);
   };
