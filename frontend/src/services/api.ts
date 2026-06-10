@@ -8,38 +8,41 @@ const api = axios.create({
 export interface Job {
   ID: number;
   CreatedAt: string;
-  Platform: string;
-  JobID: string;
-  Title: string;
-  Company: string;
-  Location: string;
-  URL: string;
-  Description: string;
-  Salary: string;
-  PostedAt: string;
-  Skills: string;
-  Status: string;
+  platform: string;
+  job_id: string;
+  title: string;
+  company: string;
+  location: string;
+  url: string;
+  description: string;
+  salary: string;
+  posted_at: string;
+  skills: string;
+  status: string;
 }
 
 export interface Application {
   ID: number;
   CreatedAt: string;
-  JobID: number;
-  Job: Job;
-  Status: string;
-  Score: number;
-  AppliedAt: string;
-  Notes: string;
+  job_id: number;
+  user_id: number;
+  job: Job;
+  status: string;
+  resume_used: string;
+  score: number;
+  applied_at: string;
+  notes: string;
+  tailored_jd: string;
 }
 
 export interface SearchQuery {
   ID: number;
-  Query: string;
-  Location: string;
-  Platforms: string;
-  Active: boolean;
-  AutoApply: boolean;
-  MaxApplied: number;
+  query: string;
+  location: string;
+  platforms: string;
+  active: boolean;
+  auto_apply: boolean;
+  max_applied: number;
 }
 
 export interface Analytics {
@@ -60,6 +63,7 @@ export interface TailorResponse {
   match_score: number;
   missing_skills: string;
   notes: string;
+  tailored_pdf?: string;
 }
 
 export const searchJobs = async (query: string, location: string) => {

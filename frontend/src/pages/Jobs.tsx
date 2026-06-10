@@ -12,6 +12,8 @@ export default function Jobs() {
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [applying, setApplying] = useState<number | null>(null);
   const [tailoring, setTailoring] = useState<number | null>(null);
+  const [tailoredResult, setTailoredResult] = useState<Record<number, { tailored_resume: string; match_score: number; missing_skills: string; notes: string; tailored_pdf?: string }>>({});
+  const [messages, setMessages] = useState<Record<number, { type: 'success' | 'error' | 'info'; text: string }>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -22,8 +24,14 @@ export default function Jobs() {
 
   useEffect(() => { load(); }, [load]);
 
+  const setMsg = (id: number, type: 'success' | 'error' | 'info', text: string) => {
+    setMessages(prev => ({ ...prev, [id]: { type, text } }));
+    setTimeout(() => setMessages(prev => { const n = { ...prev }; delete n[id]; return n; }), 5000);
+  };
+
   const handleStatusChange = async (id: number, status: string) => {
     await updateJobStatus(id, status);
+    setMsg(id, 'info', `Marked as ${status}`);
     load();
   };
 
@@ -48,10 +56,14 @@ export default function Jobs() {
     setApplying(jobId);
     try {
       const result = await applyToJob(jobId);
-      alert(`Apply result: ${result.status} - ${result.message}`);
+      if (result.status === 'success') {
+        setMsg(jobId, 'success', `Applied successfully! ${result.message}`);
+      } else {
+        setMsg(jobId, 'error', `Apply ${result.status}: ${result.message}`);
+      }
       load();
     } catch (e) {
-      alert(`Apply failed: ${(e as Error).message}`);
+      setMsg(jobId, 'error', `Apply failed: ${(e as Error).message}`);
     }
     setApplying(null);
   };
@@ -61,12 +73,13 @@ export default function Jobs() {
     try {
       const result = await tailorResume(jobId, '');
       if (result.tailored_resume) {
-        alert(`Tailored resume ready!\nMatch score: ${result.match_score}%\nMissing skills: ${result.missing_skills}`);
+        setTailoredResult(prev => ({ ...prev, [jobId]: result }));
+        setMsg(jobId, 'success', `Match score: ${Math.round(result.match_score)}%. Missing: ${result.missing_skills || 'none'}`);
       } else {
-        alert('No tailored resume returned. Upload a resume first.');
+        setMsg(jobId, 'error', 'No tailored resume returned. Upload a resume first.');
       }
     } catch (e) {
-      alert(`Tailor failed: ${(e as Error).message}`);
+      setMsg(jobId, 'error', `Tailor failed: ${(e as Error).message}`);
     }
     setTailoring(null);
   };
@@ -99,23 +112,23 @@ export default function Jobs() {
             <div key={job.ID} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
               <div className="flex items-start justify-between">
                 <div className="flex-1">
-                  <h3 className="font-semibold">{job.Title}</h3>
-                  <p className="text-sm text-gray-400">{job.Company} &middot; {job.Location}</p>
-                  {job.Salary && <p className="text-xs text-green-400 mt-1">{job.Salary}</p>}
+                  <h3 className="font-semibold">{job.title}</h3>
+                  <p className="text-sm text-gray-400">{job.company} &middot; {job.location}</p>
+                  {job.salary && <p className="text-xs text-green-400 mt-1">{job.salary}</p>}
                 </div>
                 <div className="flex items-center gap-2">
                   <span className={`text-xs px-2 py-1 rounded ${
-                    job.Status === 'new' ? 'bg-blue-900 text-blue-300' :
-                    job.Status === 'applied' ? 'bg-green-900 text-green-300' :
-                    job.Status === 'rejected' ? 'bg-red-900 text-red-300' :
+                    job.status === 'new' ? 'bg-blue-900 text-blue-300' :
+                    job.status === 'applied' ? 'bg-green-900 text-green-300' :
+                    job.status === 'rejected' ? 'bg-red-900 text-red-300' :
                     'bg-gray-700 text-gray-300'
                   }`}>
-                    {job.Status}
+                    {job.status}
                   </span>
                   <span className={`text-xs px-2 py-1 rounded ${
-                    job.Platform === 'linkedin' ? 'bg-blue-900 text-blue-300' : 'bg-orange-900 text-orange-300'
+                    job.platform === 'linkedin' ? 'bg-blue-900 text-blue-300' : 'bg-orange-900 text-orange-300'
                   }`}>
-                    {job.Platform}
+                    {job.platform}
                   </span>
                 </div>
               </div>
@@ -126,6 +139,21 @@ export default function Jobs() {
                   ) : (
                     <pre className="whitespace-pre-wrap font-sans">{detailText}</pre>
                   )}
+                </div>
+              )}
+              {tailoredResult[job.ID] && (
+                <div className="mt-3 bg-gray-850 border border-purple-800 rounded-lg p-3">
+                  <div className="flex items-center gap-3 mb-2 text-xs">
+                    <span className="text-purple-300 font-semibold">Match: {Math.round(tailoredResult[job.ID].match_score)}%</span>
+                    <span className="text-gray-400">Missing: {tailoredResult[job.ID].missing_skills || 'none'}</span>
+                    {tailoredResult[job.ID].tailored_pdf && (
+                      <a href={`http://localhost:8080/${tailoredResult[job.ID].tailored_pdf}`} target="_blank" rel="noopener noreferrer" className="text-blue-400 underline">Download PDF</a>
+                    )}
+                  </div>
+                  {tailoredResult[job.ID].notes && (
+                    <p className="text-xs text-gray-400 mb-2">{tailoredResult[job.ID].notes}</p>
+                  )}
+                  <pre className="text-sm text-gray-300 max-h-80 overflow-y-auto whitespace-pre-wrap font-sans">{tailoredResult[job.ID].tailored_resume}</pre>
                 </div>
               )}
               <div className="mt-3 flex gap-2 flex-wrap">
@@ -146,10 +174,10 @@ export default function Jobs() {
                 <button
                   className="text-xs px-2 py-1 rounded bg-green-700 hover:bg-green-600 disabled:opacity-50 flex items-center gap-1"
                   onClick={() => handleApply(job.ID)}
-                  disabled={applying === job.ID || job.Status === 'applied'}
+                  disabled={applying === job.ID || job.status === 'applied'}
                 >
                   {applying === job.ID ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
-                  {job.Status === 'applied' ? 'Applied' : 'Apply'}
+                  {job.status === 'applied' ? 'Applied' : 'Apply'}
                 </button>
                 <button
                   className="text-xs px-2 py-1 rounded bg-red-700 hover:bg-red-600"
@@ -158,6 +186,15 @@ export default function Jobs() {
                   Skip
                 </button>
               </div>
+              {messages[job.ID] && (
+                <div className={`mt-2 text-xs ${
+                  messages[job.ID].type === 'success' ? 'text-green-400' :
+                  messages[job.ID].type === 'error' ? 'text-red-400' :
+                  'text-yellow-400'
+                }`}>
+                  {messages[job.ID].text}
+                </div>
+              )}
             </div>
           ))}
         </div>

@@ -3,14 +3,14 @@ import { searchJobs } from '../services/api';
 import { Search as SearchIcon, Loader2 } from 'lucide-react';
 
 interface JobResult {
-  Platform: string;
-  JobID: string;
-  Title: string;
-  Company: string;
-  Location: string;
-  URL: string;
-  Description?: string;
-  Salary?: string;
+  platform: string;
+  job_id: string;
+  title: string;
+  company: string;
+  location: string;
+  url: string;
+  description?: string;
+  salary?: string;
 }
 
 export default function Search() {
@@ -75,14 +75,14 @@ export default function Search() {
 
       <div className="space-y-3">
         {jobs.map((job, i) => (
-          <div key={`${job.Platform}-${job.JobID}-${i}`} className="bg-gray-900 border border-gray-800 rounded-xl p-4 hover:border-gray-700 transition-colors">
+          <div key={`${job.platform}-${job.job_id}-${i}`} className="bg-gray-900 border border-gray-800 rounded-xl p-4 hover:border-gray-700 transition-colors">
             <div className="flex items-start justify-between">
               <div>
-                <h3 className="font-semibold">{job.Title || '(no title)'}</h3>
-                <p className="text-sm text-gray-400">{job.Company || '(no company)'} &middot; {job.Location || '(no location)'}</p>
+                <h3 className="font-semibold">{job.title || '(no title)'}</h3>
+                <p className="text-sm text-gray-400">{job.company || '(no company)'} &middot; {job.location || '(no location)'}</p>
               </div>
               <span className="text-xs px-2 py-1 rounded bg-blue-900 text-blue-300">
-                {job.Platform || 'LinkedIn'}
+                {job.platform || 'LinkedIn'}
               </span>
             </div>
           </div>

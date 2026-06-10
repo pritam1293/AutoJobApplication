@@ -314,21 +314,60 @@ func (h *Handler) tailorResume(c *gin.Context) {
 		return
 	}
 
+	// Get job description if empty
+	if job.Description == "" {
+		detailCtx, detailCancel := context.WithTimeout(c.Request.Context(), 45*time.Second)
+		if job.Platform == "linkedin" {
+			if err := h.linkedinScr.GetJobDetails(detailCtx, &job); err == nil && job.Description != "" {
+				db.DB.Model(&job).Update("description", job.Description)
+			}
+		}
+		detailCancel()
+	}
+
+	// Read user's uploaded resume
+	user := h.getOrCreateUser()
+	if user.ResumePath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no resume uploaded. go to Resume page first"})
+		return
+	}
+
+	parsed, err := resume.ParsePDF(user.ResumePath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to parse resume: %v", err)})
+		return
+	}
+
+	if parsed.RawText == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "resume PDF is empty or unreadable"})
+		return
+	}
+
 	var req struct {
 		Instructions string `json:"instructions"`
-		ResumeData   string `json:"resume_data"`
 	}
 	c.ShouldBindJSON(&req)
 
-	resp, err := h.tailorEngine.TailorForJob(c.Request.Context(), &resume.ResumeData{
-		RawText: req.ResumeData,
-	}, &job, req.Instructions)
+	resp, err := h.tailorEngine.TailorForJob(c.Request.Context(), parsed, &job, req.Instructions)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, resp)
+	// Generate tailored PDF
+	baseName := strings.TrimSuffix(user.ResumePath, ".pdf")
+	tailoredPDFPath := fmt.Sprintf("%s-tailored-%d.pdf", baseName, job.ID)
+	if err := resume.GeneratePDF(resp.TailoredResume, tailoredPDFPath); err != nil {
+		log.Printf("warning: failed to generate tailored PDF: %v", err)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"tailored_resume": resp.TailoredResume,
+		"match_score":     resp.MatchScore,
+		"missing_skills":  resp.MissingSkills,
+		"notes":           resp.Notes,
+		"tailored_pdf":    tailoredPDFPath,
+	})
 }
 
 func (h *Handler) listApplications(c *gin.Context) {

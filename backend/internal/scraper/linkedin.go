@@ -55,7 +55,7 @@ func (s *LinkedInScraper) ensureAllocator(ctx context.Context) (context.Context,
 	defer s.mu.Unlock()
 
 	if s.allocCtx == nil {
-		allocCtx, allocCancel := chromedp.NewExecAllocator(ctx, s.allocOpts()...)
+		allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), s.allocOpts()...)
 		s.allocCtx = allocCtx
 		s.allocCancel = allocCancel
 
@@ -103,9 +103,23 @@ func (s *LinkedInScraper) Search(ctx context.Context, query string, location str
 	searchCtx, searchCancel := context.WithTimeout(browserCtx, 90*time.Second)
 	defer searchCancel()
 
+	loc := location
+	if loc == "" {
+		loc = "India"
+	}
+	isIndia := strings.EqualFold(loc, "India") || strings.Contains(strings.ToLower(loc), "india")
+
+	q := strings.ToLower(query)
+	if strings.Contains(q, "software engineer") || strings.Contains(q, "software development engineer") || strings.Contains(q, "sde") {
+		query = "(software engineer OR software development engineer OR sde)"
+	}
+
 	encodedQuery := url.QueryEscape(query)
-	encodedLocation := url.QueryEscape(location)
-	searchURL := fmt.Sprintf("https://www.linkedin.com/jobs/search/?keywords=%s&location=%s", encodedQuery, encodedLocation)
+	encodedLocation := url.QueryEscape(loc)
+	searchURL := fmt.Sprintf("https://www.linkedin.com/jobs/search/?keywords=%s&location=%s&f_E=2", encodedQuery, encodedLocation)
+	if isIndia {
+		searchURL += "&geoId=102713980"
+	}
 
 	var jobs []JobResult
 	var sampleHTML string

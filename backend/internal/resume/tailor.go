@@ -19,20 +19,10 @@ func NewTailorEngine(aiClient *ai.Client) *TailorEngine {
 }
 
 func (e *TailorEngine) TailorForJob(ctx context.Context, resumeData *ResumeData, job *models.Job, instructions string) (*ai.TailorResponse, error) {
-	resumeJSON := ""
-	if resumeData.Structured != nil {
-		resumeJSON = fmt.Sprintf("Name: %s\nSkills: %v\nExperience: %+v\nEducation: %+v",
-			resumeData.Structured.Name,
-			resumeData.Structured.Skills,
-			resumeData.Structured.Experience,
-			resumeData.Structured.Education,
-		)
-	} else {
-		resumeJSON = resumeData.RawText
-	}
+	resumeText := resumeData.RawText
 
 	req := ai.TailorRequest{
-		ResumeData:   resumeJSON,
+		ResumeData:   resumeText,
 		JobTitle:     job.Title,
 		Company:      job.Company,
 		JobDesc:      job.Description,

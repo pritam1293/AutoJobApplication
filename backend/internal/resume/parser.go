@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/jung-kurt/gofpdf/v2"
@@ -69,8 +70,12 @@ func ParsePDF(filePath string) (*ResumeData, error) {
 		if err != nil {
 			continue
 		}
-		text += pageText + "\n"
+		if strings.TrimSpace(pageText) != "" {
+			text += pageText + "\n"
+		}
 	}
+
+	text = formatResumeText(text)
 
 	return &ResumeData{
 		RawText:   text,
@@ -78,6 +83,30 @@ func ParsePDF(filePath string) (*ResumeData, error) {
 		FileSize:  stat.Size(),
 		PageCount: reader.NumPage(),
 	}, nil
+}
+
+func formatResumeText(raw string) string {
+	sectionRe := regexp.MustCompile(`(?i)(Education|Work\s*Experience|Experience|Projects?|Technical\s*Skills?|Achievements?|Certifications?|Relevant\s*Coursework|Coursework|Summary|Professional\s*Summary|Profile|Publications?|Leadership|Languages?|Interests?|References?|Additional)`)
+
+	result := sectionRe.ReplaceAllString(raw, "\n\n$1")
+
+	result = strings.ReplaceAll(result, "•", "\n• ")
+	result = strings.ReplaceAll(result, "●", "\n● ")
+	result = strings.ReplaceAll(result, "○", "\n○ ")
+	result = strings.ReplaceAll(result, "●", "\n● ")
+
+	result = regexp.MustCompile(`\n{3,}`).ReplaceAllString(result, "\n\n")
+
+	lines := strings.Split(result, "\n")
+	var formatted []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			formatted = append(formatted, trimmed)
+		}
+	}
+
+	return strings.Join(formatted, "\n")
 }
 
 func ParsePDFFromReader(r io.Reader, filename string) (*ResumeData, error) {

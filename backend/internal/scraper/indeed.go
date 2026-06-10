@@ -43,9 +43,24 @@ func (s *IndeedScraper) Search(ctx context.Context, query string, location strin
 	ctx, cancel = context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
+	loc := location
+	if loc == "" {
+		loc = "India"
+	}
+	isIndia := strings.EqualFold(loc, "India") || strings.Contains(strings.ToLower(loc), "india")
+
+	q := strings.ToLower(query)
+	if strings.Contains(q, "software engineer") || strings.Contains(q, "software development engineer") || strings.Contains(q, "sde") {
+		query = "(software engineer OR software development engineer OR sde)"
+	}
+
 	encodedQuery := url.QueryEscape(query)
-	encodedLocation := url.QueryEscape(location)
-	searchURL := fmt.Sprintf("https://www.indeed.com/jobs?q=%s&l=%s", encodedQuery, encodedLocation)
+	encodedLocation := url.QueryEscape(loc)
+	baseURL := "https://www.indeed.com"
+	if isIndia {
+		baseURL = "https://www.indeed.co.in"
+	}
+	searchURL := fmt.Sprintf("%s/jobs?q=%s&l=%s&explvl=entry_level", baseURL, encodedQuery, encodedLocation)
 
 	var jobCards []JobResult
 	var pageHTML string

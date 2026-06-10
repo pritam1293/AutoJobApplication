@@ -60,9 +60,30 @@ func NewClient(apiKey string) *Client {
 }
 
 func (c *Client) TailorResume(ctx context.Context, req TailorRequest) (*TailorResponse, error) {
-	prompt := fmt.Sprintf(`You are an expert resume tailor. Given a candidate's base resume data and a job description, tailor the resume to maximize ATS (Applicant Tracking System) compatibility and match the job requirements.
+	if c.client == nil {
+		return nil, fmt.Errorf("gemini client not initialized: no API key configured")
+	}
 
-Base Resume Data:
+	prompt := fmt.Sprintf(`You are an expert ATS resume tailor. Given a candidate's base resume and a job description, update ONLY the "Technical Skills" and "Projects" sections. Keep ALL other sections (header, Education, Work Experience, Achievements, Relevant Coursework, etc.) EXACTLY as-is.
+
+CRITICAL — PRESERVE THIS FORMATTING EXACTLY:
+The resume uses plain text with these specific formatting conventions:
+- Section headers (Education, Work Experience, Projects, etc.) appear on their own line with a blank line before.
+- Sub-headings have dates/links on the SAME LINE, right-aligned (e.g., "National Institute of Technology, Rourkela November 2022 – May 2026").
+- Profile links use special characters like ï, §, € as separators on the header line.
+- Bullet points start with "•" — each on its own indented line.
+- Multi-line bullet text should wrap naturally, NOT on separate bullet lines.
+- Achievements section uses "•Header:" followed by description on the next line.
+- Technical Skills section uses "•Category: item1, item2, ...".
+
+RULES:
+1. "Technical Skills" section: reorder categories/skills to put most relevant first. Add missing skills from the JD that the candidate plausibly has. Remove irrelevant ones. Keep the "•Category: skill1, skill2, ..." format.
+2. "Projects" section: tweak descriptions to highlight JD keywords. Do NOT fabricate experience. Keep the "ProjectName - Subtitle Date" header format.
+3. ALL other sections: copy VERBATIM — every line break, bullet, date position, special character. Change NOTHING.
+4. Return the COMPLETE resume text preserving the raw formatting (newlines, spacing, indentation).
+5. Do NOT rewrite, rephrase, or "improve" the formatting or structure of any section.
+
+Base Resume:
 %s
 
 Target Job:
@@ -78,7 +99,7 @@ Additional Instructions: %s
 
 Return a JSON object with these fields:
 {
-  "tailored_resume": "the fully tailored resume in markdown format, optimized with relevant keywords from the JD, reordered skills, and tailored experience descriptions",
+  "tailored_resume": "the COMPLETE resume with only skills and projects sections updated, all other sections verbatim from the original formatting",
   "match_score": a float between 0 and 100 indicating how well the candidate matches the job,
   "missing_skills": "comma-separated list of important skills from the JD not found in the resume",
   "notes": "brief notes on what was changed and why"
@@ -111,6 +132,10 @@ Return a JSON object with these fields:
 }
 
 func (c *Client) ExtractSkills(ctx context.Context, jd string) (*SkillExtract, error) {
+	if c.client == nil {
+		return nil, fmt.Errorf("gemini client not initialized: no API key configured")
+	}
+
 	prompt := fmt.Sprintf(`Extract key skills, experience requirements, and education requirements from this job description. Return as JSON.
 
 Job Description:

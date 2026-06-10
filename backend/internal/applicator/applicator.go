@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -93,32 +94,40 @@ func (a *Applicator) applyLinkedIn(ctx context.Context, job *models.Job, resumeP
 	}
 
 	hasEasyApply, err := a.checkEasyApply(browserCtx)
-	if err != nil || !hasEasyApply {
+	if err == nil && hasEasyApply {
+		if !a.autoConfirm {
+			return &ApplyResult{
+				JobID: job.ID, Platform: "linkedin", Status: "skipped",
+				Message: "auto-apply disabled. enable via SetAutoConfirm(true)",
+			}, nil
+		}
+		return a.runEasyApplyFlow(browserCtx, job, resumePath)
+	}
+
+	externalURL, err := a.findExternalApplyUrl(browserCtx)
+	if err != nil || externalURL == "" {
 		return &ApplyResult{
 			JobID: job.ID, Platform: "linkedin", Status: "skipped",
-			Message: "no Easy Apply button found",
+			Message: "no Easy Apply or external apply link found",
 		}, nil
 	}
 
+	log.Printf("found external apply link: %s", externalURL)
 	if !a.autoConfirm {
 		return &ApplyResult{
 			JobID: job.ID, Platform: "linkedin", Status: "skipped",
-			Message: "auto-apply disabled. enable via SetAutoConfirm(true)",
+			Message: "external apply found. enable auto-apply to proceed",
 		}, nil
 	}
 
-	result, err := a.runEasyApplyFlow(browserCtx, job, resumePath)
-	if err != nil {
-		return &ApplyResult{
-			JobID: job.ID, Platform: "linkedin", Status: "failed",
-			Message: fmt.Sprintf("easy apply flow failed: %v", err),
-		}, nil
-	}
-
-	return result, nil
+	return a.applyExternal(browserCtx, job, externalURL, resumePath)
 }
 
 func (a *Applicator) linkedinLogin(ctx context.Context) error {
+	if a.linkedInEmail == "" || a.linkedInPassword == "" {
+		return fmt.Errorf("linkedin credentials not configured")
+	}
+
 	var currentURL string
 	err := chromedp.Run(ctx,
 		chromedp.Navigate("https://www.linkedin.com/login"),
@@ -134,6 +143,9 @@ func (a *Applicator) linkedinLogin(ctx context.Context) error {
 	}
 	if strings.Contains(currentURL, "checkpoint") {
 		return fmt.Errorf("linkedin login challenged - manual verification required")
+	}
+	if strings.Contains(currentURL, "login") {
+		return fmt.Errorf("linkedin login failed - check credentials")
 	}
 	return nil
 }
@@ -302,6 +314,156 @@ func advanceEasyApply(ctx context.Context) (bool, error) {
 	}
 
 	return false, nil
+}
+
+func (a *Applicator) findExternalApplyUrl(ctx context.Context) (string, error) {
+	var url string
+	err := chromedp.Run(ctx,
+		chromedp.Evaluate(`(() => {
+			const sel = document.querySelector(
+				'a.jobs-apply-button--external, ' +
+				'a[data-control-name="jobdetails_external"], ' +
+				'a[href*="jobs/view/apply/"]'
+			);
+			if (sel) return sel.getAttribute('href') || '';
+			const btn = document.querySelector(
+				'button.jobs-apply-button--external, ' +
+				'button[data-control-name="jobdetails_external"]'
+			);
+			if (btn) return btn.getAttribute('data-url') || btn.getAttribute('data-external-url') || '';
+			return '';
+		})()`, &url),
+	)
+	if err != nil {
+		return "", err
+	}
+	if url != "" && !strings.HasPrefix(url, "http") {
+		url = "https://www.linkedin.com" + url
+	}
+	return url, nil
+}
+
+func (a *Applicator) applyExternal(ctx context.Context, job *models.Job, externalURL, resumePath string) (*ApplyResult, error) {
+	log.Printf("navigating to external apply URL: %s", externalURL)
+
+	if err := chromedp.Run(ctx,
+		chromedp.Navigate(externalURL),
+		chromedp.Sleep(4*time.Second),
+	); err != nil {
+		return &ApplyResult{
+			JobID: job.ID, Platform: "linkedin", Status: "failed",
+			Message: fmt.Sprintf("navigate to external URL failed: %v", err),
+		}, nil
+	}
+
+	filled, err := fillExternalForm(ctx, job, resumePath)
+	if err != nil {
+		return &ApplyResult{
+			JobID: job.ID, Platform: "linkedin", Status: "failed",
+			Message: fmt.Sprintf("external form fill failed: %v", err),
+		}, nil
+	}
+
+	if filled {
+		return &ApplyResult{
+			JobID: job.ID, Platform: "linkedin", Status: "success",
+			Message: "external application form filled and submitted",
+		}, nil
+	}
+	return &ApplyResult{
+		JobID: job.ID, Platform: "linkedin", Status: "partial",
+		Message: "external form opened but could not auto-fill",
+	}, nil
+}
+
+func fillExternalForm(ctx context.Context, job *models.Job, resumePath string) (bool, error) {
+	var fields []map[string]string
+	chromedp.Evaluate(`(() => {
+		const inputs = document.querySelectorAll('input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), textarea, select');
+		return Array.from(inputs).slice(0, 20).map(inp => ({
+			id: inp.id || '',
+			name: inp.name || '',
+			placeholder: inp.placeholder || '',
+			type: inp.type || 'text',
+			required: String(inp.required || inp.getAttribute('aria-required') === 'true'),
+			autocomplete: inp.getAttribute('autocomplete') || '',
+		}));
+	})()`, &fields)
+
+	if len(fields) == 0 {
+		return false, nil
+	}
+
+	for _, f := range fields {
+		sel := ""
+		if f["id"] != "" {
+			sel = "#" + f["id"]
+		} else if f["name"] != "" {
+			sel = "[name=\"" + f["name"] + "\"]"
+		} else {
+			continue
+		}
+
+		ac := strings.ToLower(f["autocomplete"])
+		ph := strings.ToLower(f["placeholder"])
+		nm := strings.ToLower(f["name"])
+
+		var val string
+		switch {
+		case strings.Contains(ac, "email") || strings.Contains(ph, "email") || strings.Contains(nm, "email"):
+			continue
+		case strings.Contains(ac, "name") || strings.Contains(ph, "name") || strings.Contains(nm, "name") || strings.Contains(nm, "full_name"):
+			val = job.Company + " Applicant"
+		case strings.Contains(ac, "tel") || strings.Contains(ph, "phone") || strings.Contains(nm, "phone") || strings.Contains(nm, "tel"):
+			val = "000-000-0000"
+		case strings.Contains(ac, "url") || strings.Contains(ph, "linkedin") || strings.Contains(nm, "linkedin"):
+			val = "https://www.linkedin.com/in/applicant"
+		case strings.Contains(ac, "organization") || strings.Contains(ph, "company") || strings.Contains(nm, "company"):
+			continue
+		default:
+			if f["required"] == "true" {
+				val = "."
+			} else {
+				continue
+			}
+		}
+
+		if val != "" && f["type"] != "file" {
+			chromedp.Evaluate(fmt.Sprintf(`(function(){
+				var el = document.querySelector('%s');
+				if (el) { el.value = %s; el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); }
+			})()`, sel, strconv.Quote(val)), nil).Do(ctx)
+		}
+	}
+
+	if resumePath != "" {
+		var hasFile bool
+		chromedp.Evaluate(`!!document.querySelector('input[type="file"]')`, &hasFile).Do(ctx)
+		if hasFile {
+			absPath, _ := filepath.Abs(resumePath)
+			chromedp.SetUploadFiles(`input[type="file"]`, []string{absPath}, chromedp.ByQuery).Do(ctx)
+			chromedp.Sleep(2 * time.Second).Do(ctx)
+		}
+	}
+
+	var submitted bool
+	chromedp.Evaluate(`(() => {
+		const allBtns = document.querySelectorAll('button, a, input[type="submit"]');
+		for (const btn of allBtns) {
+			const text = (btn.innerText || btn.textContent || '').trim().toLowerCase();
+			if (btn.type === 'submit' || text === 'submit' || text === 'submit application' || text === 'apply' || text === 'send application') {
+				btn.click();
+				return true;
+			}
+		}
+		return false;
+	})()`, &submitted).Do(ctx)
+
+	if submitted {
+		chromedp.Sleep(3 * time.Second).Do(ctx)
+	}
+
+	return true, nil
 }
 
 func (a *Applicator) applyIndeed(ctx context.Context, job *models.Job, resumePath string) (*ApplyResult, error) {
