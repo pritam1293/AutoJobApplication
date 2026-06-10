@@ -16,6 +16,7 @@ type User struct {
 	IndeedPassword   string `json:"-"`
 	OpenAIKey        string `json:"-"`
 	ResumePath       string `json:"resume_path"`
+	LatexSource      string `json:"latex_source" gorm:"type:text"`
 }
 
 type Job struct {

@@ -20,6 +20,7 @@ type TailorRequest struct {
 	JobDesc      string `json:"job_desc"`
 	Skills       string `json:"skills"`
 	Instructions string `json:"instructions"`
+	IsLatex      bool   `json:"is_latex"`
 }
 
 type TailorResponse struct {
@@ -64,7 +65,43 @@ func (c *Client) TailorResume(ctx context.Context, req TailorRequest) (*TailorRe
 		return nil, fmt.Errorf("gemini client not initialized: no API key configured")
 	}
 
-	prompt := fmt.Sprintf(`You are an expert ATS resume tailor. Given a candidate's base resume and a job description, update ONLY the "Technical Skills" and "Projects" sections. Keep ALL other sections (header, Education, Work Experience, Achievements, Relevant Coursework, etc.) EXACTLY as-is.
+	var prompt string
+	if req.IsLatex {
+		prompt = fmt.Sprintf(`You are an expert LaTeX resume tailor. Given a LaTeX resume and a job description, modify ONLY the content inside the "Projects" (\section{Projects}) and "Technical Skills" (\section{Technical Skills}) sections.
+
+CRITICAL RULES:
+1. Do NOT change any LaTeX commands, packages, preamble, or \usepackage statements.
+2. Do NOT change any \newcommand, \titleformat, or custom command definitions.
+3. Do NOT change the structure, ordering, or formatting of any section OTHER than Projects and Technical Skills.
+4. For \section{Projects}: tweak \resumeItem{...} descriptions to highlight keywords from the job description. Do not fabricate experience.
+5. For \section{Technical Skills}: reorder skills to put most relevant first, add missing relevant skills, remove irrelevant ones. Keep the same LaTeX structure (same itemize, same \textbf{category} pattern).
+6. ALL other sections (\section{Education}, \section{Work Experience}, \section{Achievements}, \section{Relevant Coursework}, header, etc.): copy VERBATIM. Change nothing.
+7. Return the COMPLETE LaTeX document exactly as it should be compiled — from \documentclass to \end{document}.
+8. Do NOT wrap the output in markdown code blocks. Return ONLY the LaTeX source.
+
+Base Resume (LaTeX):
+%s
+
+Target Job:
+Title: %s
+Company: %s
+
+Job Description:
+%s
+
+Required Skills Mentioned: %s
+
+Additional Instructions: %s
+
+Return a JSON object with these fields:
+{
+  "tailored_resume": "the COMPLETE LaTeX document with only Projects and Technical Skills updated, all other sections verbatim from the original",
+  "match_score": a float between 0 and 100 indicating how well the candidate matches the job,
+  "missing_skills": "comma-separated list of important skills from the JD not found in the resume",
+  "notes": "brief notes on what was changed and why"
+}`, req.ResumeData, req.JobTitle, req.Company, req.JobDesc, req.Skills, req.Instructions)
+	} else {
+		prompt = fmt.Sprintf(`You are an expert ATS resume tailor. Given a candidate's base resume and a job description, update ONLY the "Technical Skills" and "Projects" sections. Keep ALL other sections (header, Education, Work Experience, Achievements, Relevant Coursework, etc.) EXACTLY as-is.
 
 CRITICAL — PRESERVE THIS FORMATTING EXACTLY:
 The resume uses plain text with these specific formatting conventions:
@@ -104,6 +141,7 @@ Return a JSON object with these fields:
   "missing_skills": "comma-separated list of important skills from the JD not found in the resume",
   "notes": "brief notes on what was changed and why"
 }`, req.ResumeData, req.JobTitle, req.Company, req.JobDesc, req.Skills, req.Instructions)
+	}
 
 	resp, err := c.client.Models.GenerateContent(ctx, c.models["default"], genai.Text(prompt), &genai.GenerateContentConfig{
 		SystemInstruction: &genai.Content{

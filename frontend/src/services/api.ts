@@ -64,7 +64,18 @@ export interface TailorResponse {
   missing_skills: string;
   notes: string;
   tailored_pdf?: string;
+  latex_source?: string;
 }
+
+export const uploadLatex = async (latex: string) => {
+  const { data } = await api.post('/resume/latex', { latex });
+  return data;
+};
+
+export const getLatexSource = async () => {
+  const { data } = await api.get<{ latex_source: string }>('/resume/latex');
+  return data;
+};
 
 export const searchJobs = async (query: string, location: string) => {
   const { data } = await api.post<SearchResult>('/jobs/search', { query, location });

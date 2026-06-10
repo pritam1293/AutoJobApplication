@@ -3,6 +3,7 @@ package resume
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jobhaunt/backend/internal/ai"
 	"github.com/jobhaunt/backend/internal/models"
@@ -18,8 +19,12 @@ func NewTailorEngine(aiClient *ai.Client) *TailorEngine {
 	}
 }
 
-func (e *TailorEngine) TailorForJob(ctx context.Context, resumeData *ResumeData, job *models.Job, instructions string) (*ai.TailorResponse, error) {
+func (e *TailorEngine) TailorForJob(ctx context.Context, resumeData *ResumeData, job *models.Job, instructions string, latexSource string) (*ai.TailorResponse, error) {
+	isLatex := strings.TrimSpace(latexSource) != "" && strings.HasPrefix(strings.TrimSpace(latexSource), `\documentclass`)
 	resumeText := resumeData.RawText
+	if isLatex {
+		resumeText = latexSource
+	}
 
 	req := ai.TailorRequest{
 		ResumeData:   resumeText,
@@ -28,6 +33,7 @@ func (e *TailorEngine) TailorForJob(ctx context.Context, resumeData *ResumeData,
 		JobDesc:      job.Description,
 		Skills:       job.Skills,
 		Instructions: instructions,
+		IsLatex:      isLatex,
 	}
 
 	resp, err := e.aiClient.TailorResume(ctx, req)
