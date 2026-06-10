@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -51,6 +52,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		api.POST("/jobs/search", h.searchJobs)
 		api.GET("/jobs", h.listJobs)
 		api.GET("/jobs/:id", h.getJob)
+		api.GET("/jobs/:id/details", h.getJobDetails)
 		api.PUT("/jobs/:id/status", h.updateJobStatus)
 
 		// Applications
@@ -158,6 +160,39 @@ func (h *Handler) getJob(c *gin.Context) {
 	c.JSON(http.StatusOK, job)
 }
 
+func (h *Handler) getJobDetails(c *gin.Context) {
+	id := c.Param("id")
+	var job models.Job
+	if err := db.DB.First(&job, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 45*time.Second)
+	defer cancel()
+
+	var err error
+	switch job.Platform {
+	case "linkedin":
+		err = h.linkedinScr.GetJobDetails(ctx, &job)
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("platform %s not supported for details", job.Platform)})
+		return
+	}
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	db.DB.Model(&job).Update("description", job.Description)
+
+	c.JSON(http.StatusOK, gin.H{
+		"id":          job.ID,
+		"description": job.Description,
+	})
+}
+
 func (h *Handler) updateJobStatus(c *gin.Context) {
 	id := c.Param("id")
 	var req struct {
@@ -180,10 +215,39 @@ func (h *Handler) applyToJob(c *gin.Context) {
 		return
 	}
 
-	// Get user's resume
 	user := h.getOrCreateUser()
 
-	result, err := h.applicator.Apply(c.Request.Context(), &job, user.ResumePath)
+	// Step 1: Get job details if description is empty
+	if job.Description == "" {
+		detailCtx, detailCancel := context.WithTimeout(c.Request.Context(), 45*time.Second)
+		if job.Platform == "linkedin" {
+			if err := h.linkedinScr.GetJobDetails(detailCtx, &job); err == nil && job.Description != "" {
+				db.DB.Model(&job).Update("description", job.Description)
+			}
+		}
+		detailCancel()
+	}
+
+	resumePath := user.ResumePath
+
+	// Step 2: Tailor resume if AI is configured and description exists
+	if h.aiClient != nil && job.Description != "" && user.ResumePath != "" {
+		parsed, err := resume.ParsePDF(user.ResumePath)
+		if err == nil && parsed.RawText != "" {
+			tailored, err := h.tailorEngine.TailorForJob(c.Request.Context(), parsed, &job, "")
+			if err == nil && tailored.TailoredResume != "" {
+				// Generate tailored PDF
+				tailoredPath := strings.Replace(user.ResumePath, ".pdf", "-tailored-"+fmt.Sprint(job.ID)+".pdf", 1)
+				if err := resume.GeneratePDF(tailored.TailoredResume, tailoredPath); err == nil {
+					resumePath = tailoredPath
+					log.Printf("generated tailored resume at %s", tailoredPath)
+				}
+			}
+		}
+	}
+
+	// Step 3: Apply
+	result, err := h.applicator.Apply(c.Request.Context(), &job, resumePath)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -199,7 +263,6 @@ func (h *Handler) applyToJob(c *gin.Context) {
 	}
 	db.DB.Create(&app)
 
-	// Update job status
 	if result.Status == "success" {
 		db.DB.Model(&job).Update("status", "applied")
 	}
@@ -231,6 +294,9 @@ func (h *Handler) uploadResume(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to parse PDF: %v", err)})
 		return
 	}
+
+	user := h.getOrCreateUser()
+	db.DB.Model(&user).Update("resume_path", savePath)
 
 	c.JSON(http.StatusOK, gin.H{
 		"message":   "resume uploaded successfully",

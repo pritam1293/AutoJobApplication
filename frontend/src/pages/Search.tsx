@@ -9,6 +9,8 @@ interface JobResult {
   Company: string;
   Location: string;
   URL: string;
+  Description?: string;
+  Salary?: string;
 }
 
 export default function Search() {
@@ -76,11 +78,11 @@ export default function Search() {
           <div key={`${job.Platform}-${job.JobID}-${i}`} className="bg-gray-900 border border-gray-800 rounded-xl p-4 hover:border-gray-700 transition-colors">
             <div className="flex items-start justify-between">
               <div>
-                <h3 className="font-semibold">{job.Title}</h3>
-                <p className="text-sm text-gray-400">{job.Company} &middot; {job.Location}</p>
+                <h3 className="font-semibold">{job.Title || '(no title)'}</h3>
+                <p className="text-sm text-gray-400">{job.Company || '(no company)'} &middot; {job.Location || '(no location)'}</p>
               </div>
               <span className="text-xs px-2 py-1 rounded bg-blue-900 text-blue-300">
-                LinkedIn
+                {job.Platform || 'LinkedIn'}
               </span>
             </div>
           </div>

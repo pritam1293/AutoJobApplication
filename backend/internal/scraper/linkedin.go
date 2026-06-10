@@ -109,6 +109,7 @@ func (s *LinkedInScraper) Search(ctx context.Context, query string, location str
 
 	var jobs []JobResult
 	var sampleHTML string
+	var debugText string
 
 	err = chromedp.Run(searchCtx,
 		chromedp.Navigate(searchURL),
@@ -123,42 +124,61 @@ func (s *LinkedInScraper) Search(ctx context.Context, query string, location str
 			return nil
 		}),
 		chromedp.OuterHTML("html", &sampleHTML, chromedp.ByQuery),
+		chromedp.Evaluate(`(() => {
+				const cards = document.querySelectorAll('li[data-occludable-job-id]');
+				let debug = 'li[data-occludable-job-id] count: ' + cards.length + '\\n';
+				cards.forEach((c, i) => { if (i < 3) debug += 'CARD ' + i + ': ' + (c.innerText || '').replace(/\\s+/g, ' ').substring(0, 300) + '\\n'; });
+
+				if (cards.length === 0) {
+					document.querySelectorAll('[class*="base-card"], [class*="job-card"], [class*="search-result"], article').forEach((c, i) => {
+						if (i < 3) {
+							const t = c.querySelector('[class*="card__title"]');
+							const l = c.querySelector('[class*="card__location"]');
+							const co = c.querySelector('[class*="card__subtitle"]');
+							debug += 'FB' + i + ': class=' + (c.className || '').substring(0, 80) + '\\n';
+							debug += '  title=' + (t ? (t.innerText || '').trim() : 'NOTFOUND') + '\\n';
+							debug += '  company=' + (co ? (co.innerText || '').trim() : 'NOTFOUND') + '\\n';
+							debug += '  location=' + (l ? (l.innerText || '').trim() : 'NOTFOUND') + '\\n';
+						}
+					});
+				}
+				return debug;
+			})()`, &debugText),
+
 		chromedp.Evaluate(`
 			(() => {
 				const results = [];
-
 				const seen = new Set();
 
-				const extract = function(root) {
-					const allLines = (root.innerText || root.textContent || '').split('\\n').map(l => l.trim()).filter(Boolean);
-					if (allLines.length < 2) return;
+				const _href = function(el) {
+					if (!el) return '';
+					const h = el.getAttribute('href') || '';
+					return h.startsWith('http') ? h : 'https://www.linkedin.com' + h;
+				};
 
-					const link = root.querySelector('a[href*="/jobs/view/"]') || root.querySelector('a[href*="linkedin.com/jobs"]');
-					let title = '', url = '';
-					if (link) {
-						title = (link.innerText || link.textContent || '').trim();
-						const h = link.getAttribute('href') || '';
-						url = h.startsWith('http') ? h : 'https://www.linkedin.com' + h;
-					}
-					if (!title) title = allLines[0];
+				const extract = function(root) {
+					const titleEl = root.querySelector('[class*="card__title"]') || root.querySelector('a[href*="/jobs/"]');
+					const locEl = root.querySelector('[class*="card__location"]') || root.querySelector('[class*="location"]');
+					const companyEl = root.querySelector('[class*="card__subtitle"]') || root.querySelector('[class*="company"]') || root.querySelector('[class*="org"]');
+
+					const title = (titleEl && (titleEl.innerText || '').trim()) || '';
 					if (!title || seen.has(title)) return;
 					seen.add(title);
 
-					let company = '';
-					let location = '';
-					for (let i = 1; i < allLines.length; i++) {
-						const line = allLines[i];
-						if (!company && line.length > 1 && !line.includes(' ago') && !line.includes('today') && !line.includes('day') && !line.includes('hour')) {
-							company = line;
-						} else if (line.includes(' ago') || line.includes('today') || line.includes('day') || line.includes('hour') || line.includes('week')) {
-							continue;
-						} else if (company && !location) {
-							location = line;
-						}
+					const company = (companyEl && (companyEl.innerText || '').trim()) || '';
+					const location = (locEl && (locEl.innerText || '').trim()) || '';
+
+					let url = '';
+					if (titleEl && titleEl.tagName === 'A') {
+						url = _href(titleEl);
+					} else if (root.tagName === 'A') {
+						url = _href(root);
+					} else {
+						const a = root.querySelector('a[href*="/jobs/"]');
+						if (a) url = _href(a);
 					}
 
 					const jobId = root.getAttribute('data-occludable-job-id') || root.getAttribute('data-job-id') || String(Math.random());
-
 					results.push({ job_id: jobId, title, company, location, url });
 				};
 
@@ -166,8 +186,7 @@ func (s *LinkedInScraper) Search(ctx context.Context, query string, location str
 				if (cards.length > 0) {
 					cards.forEach(extract);
 				} else {
-					const jobSections = document.querySelectorAll('[class*="job-card"], [class*="job-search"], [class*="search-result"], article, li[class*="job"]');
-					jobSections.forEach(extract);
+					document.querySelectorAll('[class*="base-card"], [class*="job-card"], [class*="search-result"], article').forEach(extract);
 				}
 
 				return results;
@@ -181,17 +200,8 @@ func (s *LinkedInScraper) Search(ctx context.Context, query string, location str
 		return nil, fmt.Errorf("linkedin search failed: %w", err)
 	}
 
-	if len(sampleHTML) > 0 {
-		log.Printf("linkedin page HTML length: %d, jobs found: %d", len(sampleHTML), len(jobs))
-		if len(jobs) == 0 && len(sampleHTML) > 0 {
-			const maxDump = 8000
-			if len(sampleHTML) > maxDump {
-				log.Printf("linkedin HTML (first %d chars): %s", maxDump, sampleHTML[:maxDump])
-			} else {
-				log.Printf("linkedin HTML: %s", sampleHTML)
-			}
-		}
-	}
+	log.Printf("linkedin debug: %s", debugText)
+	log.Printf("linkedin page HTML length: %d, jobs extracted: %d", len(sampleHTML), len(jobs))
 
 	for i := range jobs {
 		jobs[i].Platform = "linkedin"
@@ -248,25 +258,66 @@ func (s *LinkedInScraper) GetJobDetails(ctx context.Context, job *models.Job) er
 	detailCtx, detailCancel := context.WithTimeout(browserCtx, 30*time.Second)
 	defer detailCancel()
 
-	var detail struct {
+	var info struct {
 		Description string `json:"description"`
+		Debug       string `json:"debug"`
 	}
+
 	err = chromedp.Run(detailCtx,
 		chromedp.Navigate(job.URL),
 		chromedp.Sleep(3*time.Second),
-		chromedp.Evaluate(`
-			(() => {
-				const descEl = document.querySelector('.jobs-description-content__text, .jobs-box__html-content, .description, .show-more-less-html, article');
-				return {
-					description: descEl ? (descEl.innerText || descEl.textContent || '').trim() : ''
-				};
-			})()
-		`, &detail),
+		chromedp.Evaluate(`(() => {
+			const getText = (sel) => {
+				const el = document.querySelector(sel);
+				return el ? (el.innerText || el.textContent || '').trim() : '';
+			};
+
+			const selectors = [
+				'.jobs-description-content__text',
+				'.jobs-box__html-content',
+				'.show-more-less-html',
+				'article',
+				'[class*="description"]',
+				'[class*="Description"]',
+				'main',
+			];
+
+			let description = '';
+			for (const sel of selectors) {
+				description = getText(sel);
+				if (description.length > 100) break;
+			}
+
+			if (!description || description.length < 50) {
+				const main = document.querySelector('main') || document.body;
+				description = (main.innerText || '').trim();
+			}
+
+			if (description.length > 10000) {
+				description = description.substring(0, 10000);
+			}
+
+			let debug = '';
+			selectors.forEach(sel => {
+				const t = getText(sel);
+				debug += sel + ': ' + t.substring(0, 120).replace(/\\n/g, ' ') + '\\n';
+			});
+
+			return {description, debug};
+		})()`, &info),
 	)
 	if err != nil {
 		return fmt.Errorf("linkedin get details failed: %w", err)
 	}
 
-	job.Description = detail.Description
+	log.Printf("linkedin detail debug for %s: %s", job.Title, info.Debug)
+
+	if len(info.Description) > 0 {
+		job.Description = info.Description
+		log.Printf("linkedin: got description for %s (%d chars)", job.Title, len(job.Description))
+	} else {
+		log.Printf("linkedin: no description found for %s", job.Title)
+	}
+
 	return nil
 }

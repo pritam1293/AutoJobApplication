@@ -1,24 +1,74 @@
-import { useEffect, useState } from 'react';
-import { listJobs, updateJobStatus } from '../services/api';
+import { useCallback, useEffect, useState } from 'react';
+import { listJobs, updateJobStatus, getJobDetails, applyToJob, tailorResume } from '../services/api';
 import type { Job } from '../services/api';
+import { Loader2 } from 'lucide-react';
 
 export default function Jobs() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [filter, setFilter] = useState('');
   const [loading, setLoading] = useState(true);
+  const [detailJobId, setDetailJobId] = useState<number | null>(null);
+  const [detailText, setDetailText] = useState('');
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [applying, setApplying] = useState<number | null>(null);
+  const [tailoring, setTailoring] = useState<number | null>(null);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     const data = await listJobs(filter || undefined);
     setJobs(data.jobs);
     setLoading(false);
-  };
+  }, [filter]);
 
-  useEffect(() => { load(); }, [filter]);
+  useEffect(() => { load(); }, [load]);
 
   const handleStatusChange = async (id: number, status: string) => {
     await updateJobStatus(id, status);
     load();
+  };
+
+  const handleViewDetails = async (id: number) => {
+    if (detailJobId === id) {
+      setDetailJobId(null);
+      setDetailText('');
+      return;
+    }
+    setLoadingDetail(true);
+    setDetailJobId(id);
+    try {
+      const data = await getJobDetails(id);
+      setDetailText(data.description || '(no description)');
+    } catch {
+      setDetailText('Failed to load details.');
+    }
+    setLoadingDetail(false);
+  };
+
+  const handleApply = async (jobId: number) => {
+    setApplying(jobId);
+    try {
+      const result = await applyToJob(jobId);
+      alert(`Apply result: ${result.status} - ${result.message}`);
+      load();
+    } catch (e) {
+      alert(`Apply failed: ${(e as Error).message}`);
+    }
+    setApplying(null);
+  };
+
+  const handleTailor = async (jobId: number) => {
+    setTailoring(jobId);
+    try {
+      const result = await tailorResume(jobId, '');
+      if (result.tailored_resume) {
+        alert(`Tailored resume ready!\nMatch score: ${result.match_score}%\nMissing skills: ${result.missing_skills}`);
+      } else {
+        alert('No tailored resume returned. Upload a resume first.');
+      }
+    } catch (e) {
+      alert(`Tailor failed: ${(e as Error).message}`);
+    }
+    setTailoring(null);
   };
 
   return (
@@ -69,13 +119,37 @@ export default function Jobs() {
                   </span>
                 </div>
               </div>
-              <div className="mt-3 flex gap-2">
+              {detailJobId === job.ID && (
+                <div className="mt-3 bg-gray-800 rounded-lg p-3 text-sm text-gray-300 max-h-60 overflow-y-auto">
+                  {loadingDetail ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <pre className="whitespace-pre-wrap font-sans">{detailText}</pre>
+                  )}
+                </div>
+              )}
+              <div className="mt-3 flex gap-2 flex-wrap">
                 <button
-                  className="text-xs px-2 py-1 rounded bg-green-700 hover:bg-green-600 disabled:opacity-50"
-                  onClick={() => handleStatusChange(job.ID, 'applied')}
-                  disabled={job.Status === 'applied'}
+                  className="text-xs px-2 py-1 rounded bg-blue-700 hover:bg-blue-600"
+                  onClick={() => handleViewDetails(job.ID)}
                 >
-                  Mark Applied
+                  {detailJobId === job.ID ? 'Hide' : 'Details'}
+                </button>
+                <button
+                  className="text-xs px-2 py-1 rounded bg-purple-700 hover:bg-purple-600 disabled:opacity-50 flex items-center gap-1"
+                  onClick={() => handleTailor(job.ID)}
+                  disabled={tailoring === job.ID}
+                >
+                  {tailoring === job.ID ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                  Tailor
+                </button>
+                <button
+                  className="text-xs px-2 py-1 rounded bg-green-700 hover:bg-green-600 disabled:opacity-50 flex items-center gap-1"
+                  onClick={() => handleApply(job.ID)}
+                  disabled={applying === job.ID || job.Status === 'applied'}
+                >
+                  {applying === job.ID ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                  {job.Status === 'applied' ? 'Applied' : 'Apply'}
                 </button>
                 <button
                   className="text-xs px-2 py-1 rounded bg-red-700 hover:bg-red-600"

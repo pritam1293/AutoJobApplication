@@ -80,6 +80,11 @@ export const getJob = async (id: number) => {
   return data;
 };
 
+export const getJobDetails = async (id: number) => {
+  const { data } = await api.get<{ id: number; description: string }>(`/jobs/${id}/details`);
+  return data;
+};
+
 export const updateJobStatus = async (id: number, status: string) => {
   await api.put(`/jobs/${id}/status`, { status });
 };
