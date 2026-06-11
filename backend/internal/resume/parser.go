@@ -134,7 +134,11 @@ func ParsePDFFromReader(r io.Reader, filename string) (*ResumeData, error) {
 }
 
 func CompileLatex(latexSource string, outputDir string, filename string) (string, error) {
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
+	absDir, err := filepath.Abs(outputDir)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve output dir: %w", err)
+	}
+	if err := os.MkdirAll(absDir, 0755); err != nil {
 		return "", fmt.Errorf("cannot create output dir: %w", err)
 	}
 
@@ -143,8 +147,8 @@ func CompileLatex(latexSource string, outputDir string, filename string) (string
 		name = "resume"
 	}
 
-	texPath := filepath.Join(outputDir, name+".tex")
-	pdfPath := filepath.Join(outputDir, name+".pdf")
+	texPath := filepath.Join(absDir, name+".tex")
+	pdfPath := filepath.Join(absDir, name+".pdf")
 
 	if err := os.WriteFile(texPath, []byte(latexSource), 0644); err != nil {
 		return "", fmt.Errorf("cannot write latex file: %w", err)
@@ -155,16 +159,15 @@ func CompileLatex(latexSource string, outputDir string, filename string) (string
 		return "", fmt.Errorf("pdflatex not found; install texlive: %w", err)
 	}
 
-	cmd := exec.Command(pdflatex, "-interaction=nonstopmode", "-output-directory", outputDir, texPath)
-	cmd.Dir = outputDir
+	cmd := exec.Command(pdflatex, "-interaction=nonstopmode", "-output-directory", absDir, texPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("pdflatex failed: %w\noutput: %s", err, string(out))
 	}
 
-	_ = os.Remove(filepath.Join(outputDir, name+".aux"))
-	_ = os.Remove(filepath.Join(outputDir, name+".log"))
-	_ = os.Remove(filepath.Join(outputDir, name+".out"))
+	_ = os.Remove(filepath.Join(absDir, name+".aux"))
+	_ = os.Remove(filepath.Join(absDir, name+".log"))
+	_ = os.Remove(filepath.Join(absDir, name+".out"))
 
 	if _, err := os.Stat(pdfPath); os.IsNotExist(err) {
 		return "", fmt.Errorf("pdflatex ran but no PDF was generated\noutput: %s", string(out))
