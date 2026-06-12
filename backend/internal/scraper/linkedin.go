@@ -19,7 +19,6 @@ type LinkedInScraper struct {
 	mu          sync.Mutex
 	allocCtx    context.Context
 	allocCancel context.CancelFunc
-	loggedIn    bool
 }
 
 func NewLinkedInScraper(email, password string) *LinkedInScraper {
@@ -58,23 +57,7 @@ func (s *LinkedInScraper) ensureAllocator(ctx context.Context) (context.Context,
 		allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), s.allocOpts()...)
 		s.allocCtx = allocCtx
 		s.allocCancel = allocCancel
-
-		if s.email != "" && s.password != "" {
-			browserCtx, browserCancel := chromedp.NewContext(allocCtx)
-			defer browserCancel()
-
-			loginCtx, loginCancel := context.WithTimeout(browserCtx, 45*time.Second)
-			defer loginCancel()
-
-			if err := s.login(loginCtx); err != nil {
-				log.Printf("linkedin login failed (continuing without auth): %v", err)
-			} else {
-				s.loggedIn = true
-				log.Println("linkedin login successful")
-			}
-		} else {
-			log.Println("linkedin: no credentials provided, running without login")
-		}
+		log.Println("linkedin: running without login (guest mode)")
 	}
 
 	return s.allocCtx, nil
@@ -87,7 +70,6 @@ func (s *LinkedInScraper) Close() {
 		s.allocCancel()
 		s.allocCtx = nil
 		s.allocCancel = nil
-		s.loggedIn = false
 	}
 }
 
@@ -223,41 +205,6 @@ func (s *LinkedInScraper) Search(ctx context.Context, query string, location str
 
 	log.Printf("linkedin: found %d jobs for query '%s' in '%s'", len(jobs), query, location)
 	return jobs, nil
-}
-
-func (s *LinkedInScraper) login(ctx context.Context) error {
-	var currentURL string
-	err := chromedp.Run(ctx,
-		chromedp.Navigate("https://www.linkedin.com/login"),
-		chromedp.WaitVisible("#username", chromedp.ByQuery),
-		chromedp.Sleep(1*time.Second),
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			chromedp.Evaluate(`document.querySelector("#username").value = ""`, nil).Do(ctx)
-			return nil
-		}),
-		chromedp.SendKeys("#username", s.email, chromedp.ByQuery),
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			chromedp.Evaluate(`document.querySelector("#password").value = ""`, nil).Do(ctx)
-			return nil
-		}),
-		chromedp.SendKeys("#password", s.password, chromedp.ByQuery),
-		chromedp.Click("button[type=submit]", chromedp.ByQuery),
-		chromedp.Sleep(3*time.Second),
-		chromedp.Location(&currentURL),
-	)
-	if err != nil {
-		return err
-	}
-
-	if strings.Contains(currentURL, "checkpoint") {
-		return fmt.Errorf("linkedin login challenged - manual verification required")
-	}
-
-	if strings.Contains(currentURL, "login") {
-		return fmt.Errorf("linkedin login failed - still on login page")
-	}
-
-	return nil
 }
 
 func (s *LinkedInScraper) GetJobDetails(ctx context.Context, job *models.Job) error {
