@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom';
-import { Briefcase, Search, FileText, Settings, BarChart3, Upload } from 'lucide-react';
+import { Briefcase, Search, FileText, Settings, BarChart3, Upload, FlaskConical } from 'lucide-react';
 
 const navItems = [
   { to: '/', label: 'Dashboard', icon: BarChart3 },
@@ -7,6 +7,7 @@ const navItems = [
   { to: '/jobs', label: 'Jobs', icon: Briefcase },
   { to: '/applications', label: 'Applications', icon: FileText },
   { to: '/resume', label: 'Resume', icon: Upload },
+  { to: '/trial-tailor', label: 'Trial Tailor', icon: FlaskConical },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
 

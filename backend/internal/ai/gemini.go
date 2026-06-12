@@ -65,7 +65,7 @@ func (c *Client) TailorResume(ctx context.Context, req TailorRequest) (*TailorRe
 		return nil, fmt.Errorf("gemini client not initialized: no API key configured")
 	}
 
-	var prompt string
+ var prompt string
 	if req.IsLatex {
 		prompt = fmt.Sprintf(`You are an expert LaTeX resume tailor. Given a LaTeX resume and a job description, modify ONLY the content inside the "Projects" (\section{Projects}) and "Technical Skills" (\section{Technical Skills}) sections.
 
@@ -73,7 +73,7 @@ CRITICAL RULES:
 1. Do NOT change any LaTeX commands, packages, preamble, or \usepackage statements.
 2. Do NOT change any \newcommand, \titleformat, or custom command definitions.
 3. Do NOT change the structure, ordering, or formatting of any section OTHER than Projects and Technical Skills.
-4. For \section{Projects}: tweak \resumeItem{...} descriptions to highlight keywords from the job description. Do not fabricate experience.
+4. For \section{Projects}: tweak \resumeItem{...} descriptions to highlight keywords from the job description. Each bullet point MUST be at most 2 lines and straightforward. Maximum 3 bullet points per project. Do not fabricate experience. Remove the least relevant bullet if over 3. CRITICAL: Even with shorter bullets, MUST retain all important JD keywords (technologies, tools, methodologies) so ATS parsing still scores high. Prioritize keyword density over elaboration.
 5. For \section{Technical Skills}: reorder skills to put most relevant first, add missing relevant skills, remove irrelevant ones. Keep the same LaTeX structure (same itemize, same \textbf{category} pattern).
 6. ALL other sections (\section{Education}, \section{Work Experience}, \section{Achievements}, \section{Relevant Coursework}, header, etc.): copy VERBATIM. Change nothing.
 7. Return the COMPLETE LaTeX document exactly as it should be compiled — from \documentclass to \end{document}.
@@ -115,7 +115,7 @@ The resume uses plain text with these specific formatting conventions:
 
 RULES:
 1. "Technical Skills" section: reorder categories/skills to put most relevant first. Add missing skills from the JD that the candidate plausibly has. Remove irrelevant ones. Keep the "•Category: skill1, skill2, ..." format.
-2. "Projects" section: tweak descriptions to highlight JD keywords. Do NOT fabricate experience. Keep the "ProjectName - Subtitle Date" header format.
+2. "Projects" section: tweak descriptions to highlight JD keywords. Each bullet point MUST be at most 2 lines and straightforward. Maximum 3 bullet points per project. Do NOT fabricate experience. Remove the least relevant bullet if over 3. Keep the "ProjectName - Subtitle Date" header format. CRITICAL: Even with shorter bullets, MUST retain all important JD keywords (technologies, tools, methodologies) so ATS parsing still scores high. Prioritize keyword density over elaboration.
 3. ALL other sections: copy VERBATIM — every line break, bullet, date position, special character. Change NOTHING.
 4. Return the COMPLETE resume text preserving the raw formatting (newlines, spacing, indentation).
 5. Do NOT rewrite, rephrase, or "improve" the formatting or structure of any section.

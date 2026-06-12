@@ -77,6 +77,15 @@ export const getLatexSource = async () => {
   return data;
 };
 
+export const trialTailor = async (jobDescription: string, jobTitle?: string, company?: string) => {
+  const { data } = await api.post<TailorResponse>('/resume/trial-tailor', {
+    job_title: jobTitle || '',
+    company: company || '',
+    job_description: jobDescription,
+  });
+  return data;
+};
+
 export const searchJobs = async (query: string, location: string) => {
   const { data } = await api.post<SearchResult>('/jobs/search', { query, location });
   return data;

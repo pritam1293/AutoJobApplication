@@ -63,6 +63,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		api.POST("/resume/upload", h.uploadResume)
 		api.POST("/resume/latex", h.uploadLatex)
 		api.GET("/resume/latex", h.getLatexSource)
+		api.POST("/resume/trial-tailor", h.trialTailor)
 		api.POST("/resume/tailor/:jobId", h.tailorResume)
 
 		// Search Queries
@@ -239,14 +240,13 @@ func (h *Handler) applyToJob(c *gin.Context) {
 			tailored, err := h.tailorEngine.TailorForJob(c.Request.Context(), parsed, &job, "", user.LatexSource)
 			if err == nil && tailored.TailoredResume != "" {
 				base := strings.TrimSuffix(user.ResumePath, ".pdf")
-				tailoredPath := base + "-tailored-" + fmt.Sprint(job.ID) + ".pdf"
+				dir := filepath.Dir(base)
+				tailoredPath := filepath.Join(dir, "tailored-"+fmt.Sprint(job.ID)+".pdf")
 
 				if user.LatexSource != "" {
-					// Try compiling LaTeX
-					dir := filepath.Dir(tailoredPath)
-					if pdfPath, err := resume.CompileLatex(tailored.TailoredResume, dir, "tailored-"+fmt.Sprint(job.ID)); err == nil {
-						resumePath = pdfPath
-						log.Printf("generated tailored LaTeX resume at %s", pdfPath)
+					if _, err := resume.CompileLatex(tailored.TailoredResume, dir, "tailored-"+fmt.Sprint(job.ID)); err == nil {
+						resumePath = tailoredPath
+						log.Printf("generated tailored LaTeX resume at %s", tailoredPath)
 					} else {
 						log.Printf("LaTeX compilation failed, falling back to gofpdf: %v", err)
 						if err := resume.GeneratePDF(tailored.TailoredResume, tailoredPath); err == nil {
@@ -353,6 +353,79 @@ func (h *Handler) getLatexSource(c *gin.Context) {
 	})
 }
 
+func (h *Handler) trialTailor(c *gin.Context) {
+	var req struct {
+		JobTitle       string `json:"job_title"`
+		Company        string `json:"company"`
+		JobDescription string `json:"job_description" binding:"required"`
+		Instructions   string `json:"instructions"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "job_description is required"})
+		return
+	}
+
+	user := h.getOrCreateUser()
+	if user.ResumePath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no resume uploaded. go to Resume page first"})
+		return
+	}
+
+	parsed, err := resume.ParsePDF(user.ResumePath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to parse resume: %v", err)})
+		return
+	}
+	if parsed.RawText == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "resume PDF is empty or unreadable"})
+		return
+	}
+
+	// Build a temporary job object for tailoring
+	job := &models.Job{
+		Title:       req.JobTitle,
+		Company:     req.Company,
+		Description: req.JobDescription,
+	}
+
+	resp, err := h.tailorEngine.TailorForJob(c.Request.Context(), parsed, job, req.Instructions, user.LatexSource)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Generate output (LaTeX compile or gofpdf fallback)
+	baseName := strings.TrimSuffix(user.ResumePath, ".pdf")
+	dir := filepath.Dir(baseName)
+	trialPath := filepath.Join(dir, "trial.pdf")
+	var latexSource string
+
+	if user.LatexSource != "" {
+		latexSource = resp.TailoredResume
+		if _, err := resume.CompileLatex(resp.TailoredResume, dir, "trial"); err != nil {
+			log.Printf("trial LaTeX compilation failed, falling back: %v", err)
+			if err2 := resume.GeneratePDF(resp.TailoredResume, trialPath); err2 != nil {
+				log.Printf("trial gofpdf fallback also failed: %v", err2)
+				trialPath = ""
+			}
+		}
+	} else {
+		if err := resume.GeneratePDF(resp.TailoredResume, trialPath); err != nil {
+			log.Printf("trial PDF generation failed: %v", err)
+			trialPath = ""
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"tailored_resume": resp.TailoredResume,
+		"match_score":     resp.MatchScore,
+		"missing_skills":  resp.MissingSkills,
+		"notes":           resp.Notes,
+		"tailored_pdf":    trialPath,
+		"latex_source":    latexSource,
+	})
+}
+
 func (h *Handler) tailorResume(c *gin.Context) {
 	jobID := c.Param("jobId")
 	var job models.Job
@@ -403,30 +476,26 @@ func (h *Handler) tailorResume(c *gin.Context) {
 
 	// Generate tailored output
 	baseName := strings.TrimSuffix(user.ResumePath, ".pdf")
+	dir := filepath.Dir(baseName)
 	var tailoredPDFPath string
 	var latexSource string
 
 	if user.LatexSource != "" {
 		// LaTeX mode — compile with pdflatex
 		latexSource = resp.TailoredResume
-		dir := filepath.Dir(baseName)
-		pdfPath, err := resume.CompileLatex(resp.TailoredResume, dir, "tailored-"+fmt.Sprint(job.ID))
-		if err != nil {
+		tailoredPDFPath = filepath.Join(dir, fmt.Sprintf("tailored-%d.pdf", job.ID))
+		if _, err := resume.CompileLatex(resp.TailoredResume, dir, "tailored-"+fmt.Sprint(job.ID)); err != nil {
 			log.Printf("LaTeX compilation failed, falling back to gofpdf: %v", err)
-			tailoredPDFPath = fmt.Sprintf("%s-tailored-%d.pdf", baseName, job.ID)
 			if err2 := resume.GeneratePDF(resp.TailoredResume, tailoredPDFPath); err2 != nil {
 				log.Printf("gofpdf fallback also failed: %v", err2)
 			}
-		} else {
-			tailoredPDFPath = pdfPath
 		}
 	} else {
-		tailoredPDFPath = fmt.Sprintf("%s-tailored-%d.pdf", baseName, job.ID)
+		tailoredPDFPath = filepath.Join(dir, fmt.Sprintf("tailored-%d.pdf", job.ID))
 		if err := resume.GeneratePDF(resp.TailoredResume, tailoredPDFPath); err != nil {
 			log.Printf("warning: failed to generate tailored PDF: %v", err)
 		}
 	}
-
 	c.JSON(http.StatusOK, gin.H{
 		"tailored_resume": resp.TailoredResume,
 		"match_score":     resp.MatchScore,
